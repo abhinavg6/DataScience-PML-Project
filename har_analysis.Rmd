@@ -1,0 +1,152 @@
+---
+title: "HAR Dataset Analysis"
+output: html_document
+---
+
+#### Executive Summary
+
+In this report, we use the Human Activity Recognition training dataset ([HAR][harref]), and explore relationship between different activity metrics and a body posture during which the activity was being performed. The different postures are "sitting-down", "standing-up", "sitting", "standing" and "walking". In the dataset, these postures are referred as "classe" - A, B, C, D and E. We'll try to build a model to predict the classe (body posture) for any set of same activity metrics.
+
+#### Deduce the appropriate data
+
+We first look at the dataset to see what it consists of:
+
+```{r cache=TRUE}
+pmldata <- read.csv("pml-training.csv")
+dim(pmldata)
+length(unique(pmldata$user_name))
+```
+
+The dataset consists of 19622 observations, with 160 attributes for each. The observations belong to 6 participants.
+
+Overall, the dataset is divided into two parts - one with each observation per user per instant of time, and other with observations/user providing some consolidated statistics of activity metrics. For our analysis, we'll use only the first set of observations (identified by new_window = "no" in the dataset). We'll retain only the fields of interest in the filtered dataset, i.e. without all statistical fields, as shown below:
+
+```{r}
+pmlfiltereddata <- pmldata[pmldata$new_window=="no",]
+pmlcols <- c("user_name","classe",grep("_x$", colnames(pmlfiltereddata), value=T),grep("_y$", colnames(pmlfiltereddata), value=T),grep("_z$", colnames(pmlfiltereddata), value=T),grep("^roll_", colnames(pmlfiltereddata), value=T),grep("^pitch_", colnames(pmlfiltereddata), value=T),grep("^yaw_", colnames(pmlfiltereddata), value=T))
+pmlfiltereddata <- pmlfiltereddata[,(colnames(pmlfiltereddata) %in% pmlcols)]
+dim(pmlfiltereddata)
+```
+
+#### Exploratory analysis
+
+We'll explore the dataset to first see how field "roll_arm"" is related to classe for each user.
+
+```{r expfigs1, fig.height=8, fig.width=12, fig.align='center'}
+par(mfrow = c(2,3))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="carlitos",], xlab="carlitos roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="adelmo",], xlab="adelmo roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="charles",], xlab="charles roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="eurico",], xlab="eurico roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="jeremy",], xlab="jeremy roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+boxplot(roll_arm ~ classe, data=pmlfiltereddata[pmlfiltereddata$user_name=="pedro",], xlab="pedro roll_arm", ylab="classe", col=c("Blue","Salmon","Green","Pink","Grey"))
+```
+
+We observe that Jeremy doesn't have any observations for roll_arm. Carlitos has a huge range of roll_arm for classe A, and Charles seem to have similar ranges for classes B, C, D and E.
+
+We now summarize the data to compare the field roll_forearm for different users, during different classes.?
+
+```{r expfigs2, fig.height=6, fig.width=12}
+library(ggplot2)
+library(plyr)
+pmlsumm <- ddply(pmlfiltereddata, .(user_name, classe), summarize, meanrf=mean(roll_forearm, na.rm=T))
+suppressWarnings(print(ggplot(pmlsumm, aes(x=user_name,y=meanrf)) + geom_bar(stat="identity") + facet_wrap(~classe) + xlab("User") + ylab("Average roll-forearm")))
+```
+
+We see that Jeremy and Pedro have the higher averages for roll_forearm, and Carlitos and Charles seem to be near zero or negative.
+
+#### Build the model
+
+As seen above, each metric has a different variation and ranges for different users and different classes. Hence, we'll include all filtered metrics from the dataset to build/train our model.  We'll create training and testing datasets for the model, and then convert the "user_name" factor variable to a set of dummy indicator variables in training dataset.
+
+```{r}
+library(caret)
+set.seed(998)
+# Create training and testing data
+inTrain <- createDataPartition(pmlfiltereddata$classe, p=0.8, list=F)
+training <- pmlfiltereddata[inTrain,]
+testing <- pmlfiltereddata[-inTrain,]
+# Create dummy variables
+set.seed(750)
+dummies <- dummyVars(classe ~ user_name, data=training)
+training <- cbind(training, predict(dummies, newdata=training))
+training <- training[,-1]
+head(training[,(colnames(training) %in% grep(".", colnames(training), value=T, fixed=T))],4)
+```
+
+We've created 6 new dummy variables from "user_name" (see above), with values 1 and 0. For e.g., an observation for user "carlitos" would have variable "user_name.carlitos" as 1, and rest new variables as 0.
+
+We'll now fit a boosted tree model, and employ cross-validation with 4 folds. Since the boosting algorithm takes a long time to create the model, we're directly providing some tuning parameters. Different values for tuning parameters were examined offline, and we've not shown all temporary models to reduce procesing time.
+
+```{r cache=TRUE}
+# Set cross-validation and number of folds
+fitcontrol <- trainControl(method="cv", number=4)
+# Provide tuning parameters
+gbmGrid <- expand.grid(interaction.depth=c(1,3,5), n.trees=(1:8)*50, shrinkage=0.1)
+set.seed(825)
+# Fit the model
+gbmFit <- train(training$classe~., data=training[,-49], method="gbm", trControl = fitcontrol, verbose=F, tuneGrid = gbmGrid)
+gbmFit
+```
+
+We can examine the relationship between the tuning parameters and the "Accuracy" of the algorithm.
+
+```{r modfigs1, fig.height=4, fig.width=8}
+suppressWarnings(trellis.par.set(caretTheme()))
+plot(gbmFit)
+```
+
+We can also see how "Kappa" performs with the tuning parameters in a heatmap plot.
+
+```{r modfigs2, fig.height=4, fig.width=8}
+suppressWarnings(trellis.par.set(caretTheme()))
+plot(gbmFit, metric="Kappa", plotType="level", scales=list(x=list(rot=90)))
+```
+
+#### Predictions and error rate
+
+Now the model is created, we'll use it to make the predictions on our own created testing data, and see what the out of sample error is.
+
+```{r}
+# Create dummy variables for testing
+set.seed(750)
+dummiestest <- dummyVars(classe ~ user_name, data=testing)
+testing <- cbind(testing, predict(dummiestest, newdata=testing))
+testing <- testing[,-1]
+# Make the predictions
+pred <- predict(gbmFit, testing[,-49])
+table(pred, testing$classe)
+```
+
+We can now find the out of sample error rate for the model:
+
+```{r}
+testing$pred <- ifelse(pred==testing$classe, 1, 0)
+error <- nrow(testing[testing$pred==0,])/nrow(testing)
+```
+
+The error rate on our testing dataset is **`r error`**.
+
+Finally, we can predict the classe for 20 test cases provided in a separate dataset. We'll perform the same transformation and pre-processing on the final test dataset, as we did on our training and testing datasets.
+
+```{r}
+pmltest <- read.csv("pml-testing.csv")
+pmltestfilter <- pmltest[,(colnames(pmltest) %in% pmlcols)]
+# Adding dummy classe to the dataset
+pmltestfilter$classe <- "Z"
+set.seed(750)
+# Create dummy variables for user_name
+dummyfinal <- dummyVars(classe ~ user_name, data=pmltestfilter)
+pmltestfilter <- cbind(pmltestfilter, predict(dummyfinal, newdata=pmltestfilter))
+# Remove user_name
+pmltestfilter <- pmltestfilter[,-1]
+# Predict the classe and add it to the dataset
+pmltestfilter$predfinal <- predict(gbmFit, pmltestfilter[,-49])
+# Add the problem_id back
+pmltestfilter$problem_id <- 1:20
+# Print the final predictions
+pmltestfilter[,(colnames(pmltestfilter) %in% c("problem_id","predfinal"))]
+```
+
+---
+[harref]: http://groupware.les.inf.puc-rio.br/har
